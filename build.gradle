@@ -1,0 +1,23 @@
+// Example build file
+
+// Create a gradle.properties file that defines the following properties:
+// arduinoDir (location of arduino installation, example: arduinoDir=/Applications/Arduino.app/Contents/Resources/Java)
+// arduinoComPort (com port for uploading sketches, example: arduinoComPort=/dev/cu.usbserial-A501E2QY)
+
+// This line will import the tasks defined on the arduino.gradle file.
+apply from: 'arduino.gradle'
+
+// Name of the main file of your sketch
+ext.sketchMainFile = "Blink.ino"
+
+// Define arduino core, run 'gradle listCores' to see all available
+ext.core = "arduino"
+
+// Define arduino variant, run 'gradle listVariants' to see all available
+ext.variant = "standard"
+
+// Define the microcontroler used on the board
+ext.cpuName = "atmega328p"
+
+// Define the clock speed on the board
+ext.cpuClock = "16000000L"
