@@ -1,0 +1,346 @@
+//apply from: 'properties.gradle'
+
+ext.arduinoCoresDir = "$arduinoDir/hardware/arduino/cores/"
+ext.arduinoVariantsDir = "$arduinoDir/hardware/arduino/variants/"
+ext.librariesDir = "$arduinoDir/libraries/"
+ext.projectLibrariesDir = "$buildDir/../../libraries/"
+
+buildscript {
+  repositories {
+    mavenCentral()
+  }
+
+  dependencies {
+    classpath 'net.java.dev.jna:jna:3.4.0' 
+    classpath 'net.java.dev.jna:platform:3.4.0' 
+  }
+}
+
+class StreamGobbler extends Thread {
+  BufferedInputStream source;
+  BufferedOutputStream dest;
+
+  StreamGobbler(InputStream source, OutputStream dest) {
+    this.source = new BufferedInputStream(source);
+    this.dest = new BufferedOutputStream(dest);
+  }
+
+  public void run() {
+    try {           
+      byte[] b = new byte[100]
+      int size = 0;
+      while ((size = source.read(b)) > 0)
+        dest.write(b, 0, size)
+
+      dest.flush()
+    } catch (IOException ioe) {
+      ioe.printStackTrace();
+    }
+  }
+}
+
+def extract_archive_index() {
+  def result = [:]
+  
+  def index = new File(buildDir, "archiveindex.dat")
+
+  if (index.exists()) {
+    def reader = index.newReader()
+    String line = null
+    while ((line = reader.readLine()) != null) {
+      def elems = line.split("=", 2)
+      result[elems[0]] = Long.parseLong(elems[1])
+    }
+  }
+
+  return result
+}
+
+def save_archive_index(index) {
+  def index_file = new File(buildDir, "archiveindex.dat").newPrintWriter()
+  index.each {
+    index_file.println("${it.key}=${it.value}")
+  }
+  index_file.flush()
+  index_file.close()
+}
+
+def runCmd(String cmd, File baseDir) {
+  def sout = new StringBuffer()
+  def serr = new StringBuffer()
+  
+  def outProc = Runtime.runtime.exec(cmd, [] as String[], baseDir)
+  def running = true
+  
+  def bufferPrinter = {buffer ->
+    def lastIndex = 0
+    while(running) {
+      def length = buffer.length()
+      if (length > lastIndex) {
+        print buffer.subSequence(lastIndex, length)
+        lastIndex = length
+      }
+      Thread.sleep(100)
+    }
+  }
+  Thread.start bufferPrinter.curry(sout)
+  Thread.start bufferPrinter.curry(serr)
+
+  outProc.consumeProcessOutput(sout, serr)
+  try {
+    outProc.waitFor()
+  } finally {
+    running = false
+  }
+
+  if (outProc.exitValue()) {
+    throw new GradleException("Command execution failed (Exit code: ${outProc.exitValue()})\n${sout.toString()}\n${serr.toString()}")
+  }
+}
+
+def exec_cmd(cmd) {
+  def command = ""
+  cmd.each {
+    command = command + it + " "
+  }
+
+  runCmd(command, buildDir)
+}
+
+def archive_object_file(object_file) {
+  def cmd = ["$arduinoDir/hardware/tools/avr/bin/avr-ar",
+         "rcs",
+         "$buildDir/core.a",
+         object_file.absolutePath]
+
+  exec_cmd(cmd)
+}
+
+def enum_source_files(list, dir) {
+    dir.eachFileMatch(~/.*\.c/) {
+      list << it
+    }
+
+    dir.eachFileMatch(~/.*\.cpp/) {
+      list << it
+    }
+    
+    dir.eachFileMatch(~/.*\.ino/) {
+      list << it
+    }
+
+    dir.eachDirRecurse() {
+      if (!it.absolutePath.contains("/examples") && !it.absolutePath.contains("/.svn")) {
+      	enum_source_files(list, it)
+      }
+    }
+}
+
+def build_file(file, libraries) {
+  def object_file = new File(buildDir, file.name + ".o")
+
+  if (file.lastModified() < object_file.lastModified())
+    return object_file
+
+  // File.absolutePath doesn't work if the file doesn't exist
+  object_file.createNewFile()
+
+  println "Compiling ${file.name}"
+
+  def boolean cpp = file.getPath() =~ /.*\.cpp/
+  cpp = cpp || file.getPath() =~ /.*\.ino/
+
+  def noexceptions = cpp ? "-fno-exceptions" : ""
+  def compiler = cpp ? "avr-g++" : "avr-gcc"
+
+
+  def cmd = []
+  cmd << "$arduinoDir/hardware/tools/avr/bin/$compiler"
+  if (cpp) {
+  	cmd << "-x c++"
+  }
+  cmd << "-c"
+  cmd << "-g"
+  cmd << "-Os"
+  cmd << "-Wall"
+  cmd << "$noexceptions"
+  cmd << "-ffunction-sections"
+  cmd << "-fdata-sections"
+  cmd << "-mmcu=$cpuName"
+  cmd << "-DF_CPU=$cpuClock"
+  cmd << "-MMD"
+  cmd << "-DUSB_VID=null"
+  cmd << "-DUSB_PID=null"
+  cmd << "-DARDUINO=105"
+  cmd << "-I$arduinoCoresDir/$core"
+  cmd << "-I$arduinoVariantsDir/$variant"
+  libraries.each { library ->
+    cmd << "-I${library.absolutePath}"
+    library.eachDirRecurse() {
+      if (!it.absolutePath.contains("/examples") && !it.absolutePath.contains("/.svn"))
+        cmd << "-I${it.absolutePath}"
+    }
+  }
+  cmd << file.absolutePath
+  cmd << "-o" + object_file.name
+
+  exec_cmd(cmd)
+
+  return object_file
+}
+
+def link(sketch_object_files) {
+  def cmd = []
+  cmd << "$arduinoDir/hardware/tools/avr/bin/avr-gcc"
+  cmd << "-Os"
+  cmd << "-Wl"
+  cmd << "--gc-sections"
+  cmd << "-mmcu=$cpuName"
+  cmd << "-o$buildDir/${sketchMainFile}.elf"
+  sketch_object_files.each {
+    cmd << it.absolutePath
+  }
+  cmd << buildDir.absolutePath + "/core.a"
+  cmd << "-L$buildDir"
+  cmd << "-lm"
+  exec_cmd(cmd)
+}
+
+def objcopy() {
+  def cmd = ["$arduinoDir/hardware/tools/avr/bin/avr-objcopy",
+         "-O",
+         "ihex",
+         "-j",
+         ".eeprom",
+         "--set-section-flags=.eeprom=alloc,load",
+         "--no-change-warnings",
+         "--change-section-lma",
+         ".eeprom=0",
+         "$buildDir/${sketchMainFile}.elf",
+         "$buildDir/${sketchMainFile}.eep"]
+  exec_cmd(cmd)
+
+  cmd = ["$arduinoDir/hardware/tools/avr/bin/avr-objcopy",
+         "-O",
+         "ihex",
+         "-R",
+         ".eeprom",
+         "$buildDir/${sketchMainFile}.elf",
+         "$buildDir/${sketchMainFile}.hex"]
+  exec_cmd(cmd)
+}
+
+def can_skip_archive(index, arduino_object_files) {
+  def result = true
+  arduino_object_files.each { obj ->
+    if (!index.containsKey(obj.name))
+      result = false
+    else if (obj.lastModified() > index[obj.name])
+      result = false
+  }
+
+  return result
+}
+
+def enum_includes(file) {
+  def result = []
+  def reader = file.newReader()
+  def line = null
+  // Pattern copied from Arduino IDE source code: processing.app.preproc.PdePreprocessor.java
+  def include_pattern = ~/^\s*#include\s+[<"](\S+)[">]/
+  while ((line = reader.readLine()) != null) {
+    def matcher = include_pattern.matcher(line)
+    if (matcher.matches()) {
+      def header = matcher[0][1]
+      if (header.endsWith(".h"))
+        header = header.substring(0, header.length() -2)
+      result << header
+    }
+      
+  }  
+
+  return result;
+}
+
+task build << {
+    buildDir.mkdirs()
+    def sketch_files = []
+    def arduino_files = []
+    def sketch_object_files = []
+    def arduino_object_files = []   
+    def libraries = []
+    enum_source_files(sketch_files, projectDir)
+    enum_source_files(arduino_files, new File("$arduinoCoresDir/$core"))  
+
+    def includes = enum_includes(new File(projectDir, sketchMainFile))
+    includes.each { include ->
+      def libdir = new File(librariesDir, include)
+      if (libdir.exists() && libdir.isDirectory()) {
+        libraries << libdir
+        enum_source_files(arduino_files, libdir)
+      }
+      
+      libdir = new File(projectLibrariesDir, include)
+      if (libdir.exists() && libdir.isDirectory()) {
+        libraries << libdir
+        enum_source_files(arduino_files, libdir)
+      }
+    }
+
+    println "Compiling source files"
+    sketch_files.each {
+      sketch_object_files << build_file(it, libraries)
+    }
+
+    arduino_files.each {
+      arduino_object_files << build_file(it, libraries)
+    }
+
+    def archive_index = extract_archive_index()
+    if (!can_skip_archive(archive_index, arduino_object_files)) {
+      println "Archiving object files"
+      archive_index.clear()
+      arduino_object_files.each {
+        archive_object_file(it)
+        archive_index[it.name] = it.lastModified()
+      }
+      save_archive_index(archive_index)
+    }
+
+    println "Linking"
+    link(sketch_object_files)
+
+    objcopy()
+}
+
+task upload(dependsOn: build) << {
+  def cmd = ["$arduinoDir/hardware/tools/avrdude",
+         "-C$arduinoDir/hardware/tools/avrdude.conf",
+         "-v",
+         "-p$cpuName",
+         "-carduino",
+         "-P$arduinoComPort",
+         "-b115200",
+         "-D",
+         "-Uflash:w:$buildDir/${sketchMainFile}.hex:i"]
+  exec_cmd(cmd)
+}
+
+task listVariants << { printSubDirs(new File(arduinoVariantsDir)) }
+
+task listCores << { printSubDirs(new File(arduinoCoresDir)) }
+
+task listArduinoLibraries << { printSubDirs(new File(librariesDir)) }
+
+task listProjectLibraries << { printSubDirs(new File(projectLibrariesDir)) }
+
+def printSubDirs(File dir) {
+  dir.listFiles().each {
+  	if (it.isDirectory() && !it.name.startsWith(".")) println(it.name)
+  }
+}
+
+task clean << {
+  ant.delete(dir: buildDir)
+}
+
