@@ -1,0 +1,3 @@
+// THESE ARE JUST EXAMPLES, YOU PROBABLY NEED TO CHANGE THEM.
+ext.arduinoDir = "/opt/arduino-1.8.4/arduino-1.8.4"
+ext.arduinoComPort = "/dev/ttyUSB0"
