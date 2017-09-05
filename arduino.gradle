@@ -1,7 +1,7 @@
-//apply from: 'properties.gradle'
+apply from: 'properties.gradle'
 
-ext.arduinoCoresDir = "$arduinoDir/hardware/arduino/cores/"
-ext.arduinoVariantsDir = "$arduinoDir/hardware/arduino/variants/"
+ext.arduinoCoresDir = "$arduinoDir/hardware/arduino/avr/cores/"
+ext.arduinoVariantsDir = "$arduinoDir/hardware/arduino/avr/variants/"
 ext.librariesDir = "$arduinoDir/libraries/"
 ext.projectLibrariesDir = "$buildDir/../../libraries/"
 
@@ -11,8 +11,8 @@ buildscript {
   }
 
   dependencies {
-    classpath 'net.java.dev.jna:jna:3.4.0' 
-    classpath 'net.java.dev.jna:platform:3.4.0' 
+    classpath 'net.java.dev.jna:jna:3.4.0'
+    classpath 'net.java.dev.jna:platform:3.4.0'
   }
 }
 
@@ -26,7 +26,7 @@ class StreamGobbler extends Thread {
   }
 
   public void run() {
-    try {           
+    try {
       byte[] b = new byte[100]
       int size = 0;
       while ((size = source.read(b)) > 0)
@@ -41,7 +41,7 @@ class StreamGobbler extends Thread {
 
 def extract_archive_index() {
   def result = [:]
-  
+
   def index = new File(buildDir, "archiveindex.dat")
 
   if (index.exists()) {
@@ -68,10 +68,10 @@ def save_archive_index(index) {
 def runCmd(String cmd, File baseDir) {
   def sout = new StringBuffer()
   def serr = new StringBuffer()
-  
+
   def outProc = Runtime.runtime.exec(cmd, [] as String[], baseDir)
   def running = true
-  
+
   def bufferPrinter = {buffer ->
     def lastIndex = 0
     while(running) {
@@ -94,7 +94,7 @@ def runCmd(String cmd, File baseDir) {
   }
 
   if (outProc.exitValue()) {
-    throw new GradleException("Command execution failed (Exit code: ${outProc.exitValue()})\n${sout.toString()}\n${serr.toString()}")
+    throw new GradleException("Command execution failed (Exit code: ${outProc.exitValue()})\n${sout.toString()}\n${serr.toString()}\n cmd: ${cmd}")
   }
 }
 
@@ -124,7 +124,7 @@ def enum_source_files(list, dir) {
     dir.eachFileMatch(~/.*\.cpp/) {
       list << it
     }
-    
+
     dir.eachFileMatch(~/.*\.ino/) {
       list << it
     }
@@ -193,8 +193,7 @@ def link(sketch_object_files) {
   def cmd = []
   cmd << "$arduinoDir/hardware/tools/avr/bin/avr-gcc"
   cmd << "-Os"
-  cmd << "-Wl"
-  cmd << "--gc-sections"
+  cmd << "-Wl,--gc-sections"
   cmd << "-mmcu=$cpuName"
   cmd << "-o$buildDir/${sketchMainFile}.elf"
   sketch_object_files.each {
@@ -256,8 +255,8 @@ def enum_includes(file) {
         header = header.substring(0, header.length() -2)
       result << header
     }
-      
-  }  
+
+  }
 
   return result;
 }
@@ -267,10 +266,10 @@ task build << {
     def sketch_files = []
     def arduino_files = []
     def sketch_object_files = []
-    def arduino_object_files = []   
+    def arduino_object_files = []
     def libraries = []
     enum_source_files(sketch_files, projectDir)
-    enum_source_files(arduino_files, new File("$arduinoCoresDir/$core"))  
+    enum_source_files(arduino_files, new File("$arduinoCoresDir/$core"))
 
     def includes = enum_includes(new File(projectDir, sketchMainFile))
     includes.each { include ->
@@ -279,7 +278,7 @@ task build << {
         libraries << libdir
         enum_source_files(arduino_files, libdir)
       }
-      
+
       libdir = new File(projectLibrariesDir, include)
       if (libdir.exists() && libdir.isDirectory()) {
         libraries << libdir
@@ -314,8 +313,8 @@ task build << {
 }
 
 task upload(dependsOn: build) << {
-  def cmd = ["$arduinoDir/hardware/tools/avrdude",
-         "-C$arduinoDir/hardware/tools/avrdude.conf",
+  def cmd = ["$arduinoDir/hardware/tools/avr/bin/avrdude",
+         "-C$arduinoDir/hardware/tools/avr/etc/avrdude.conf",
          "-v",
          "-p$cpuName",
          "-carduino",
